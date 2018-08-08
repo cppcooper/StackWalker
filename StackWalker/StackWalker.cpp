@@ -1,3 +1,4 @@
+#include "posh.h"
 /**********************************************************************
  *
  * StackWalker.cpp
@@ -83,20 +84,23 @@
  **********************************************************************/
 
 #include "StackWalker.h"
-
+#include <iostream>
 #include <stdio.h>
 #include <stdlib.h>
 #include <tchar.h>
 #include <windows.h>
-#pragma comment(lib, "version.lib") // for "VerQueryValue"
+#include <io.h>
+
+#if defined POSH_COMPILER_MSVC
+//#pragma comment(lib, "version.lib") // for "VerQueryValue"
+#endif
+
 #pragma warning(disable : 4826)
 
-
+#pragma region "types and stuff"
 // If VC7 and later, then use the shipped 'dbghelp.h'-file
 #pragma pack(push, 8)
-#if _MSC_VER >= 1300
-#include <dbghelp.h>
-#else
+#if _MSC_VER < 1300
 // inline the important dbghelp.h-declarations...
 typedef enum
 {
@@ -180,6 +184,8 @@ typedef struct _tagSTACKFRAME64
   DWORD64   Reserved[3];
   KDHELP64  KdHelp;
 } STACKFRAME64, *LPSTACKFRAME64;
+
+
 typedef BOOL(__stdcall* PREAD_PROCESS_MEMORY_ROUTINE64)(HANDLE  hProcess,
                                                         DWORD64 qwBaseAddress,
                                                         PVOID   lpBuffer,
@@ -216,6 +222,8 @@ typedef DWORD64(__stdcall* PTRANSLATE_ADDRESS_ROUTINE64)(HANDLE      hProcess,
 #define UNDNAME_NAME_ONLY                (0x1000) // Crack only the name for primary declaration;
 // clang-format on
 
+#else
+#include <dbghelp.h>
 #endif // _MSC_VER < 1300
 #pragma pack(pop)
 
@@ -224,10 +232,13 @@ typedef DWORD64(__stdcall* PTRANSLATE_ADDRESS_ROUTINE64)(HANDLE      hProcess,
 #define INVALID_FILE_ATTRIBUTES ((DWORD)-1)
 #endif
 
+#pragma endregion
+
 // secure-CRT_functions are only available starting with VC8
-#if _MSC_VER < 1400
+#if _MSC_VER > 1400
+#else
 #define strcpy_s(dst, len, src) strcpy(dst, src)
-#define strncpy_s(dst, len, src, maxLen) strncpy(dst, len, src)
+#define strncpy_s(dst, len, src, maxLen) strncpy(dst, src, len)
 #define strcat_s(dst, len, src) strcat(dst, src)
 #define _snprintf_s _snprintf
 #define _tcscat_s _tcscat
@@ -243,11 +254,101 @@ static void MyStrCpy(char* szDest, size_t nMaxDestSize, const char* szSrc)
   szDest[nMaxDestSize - 1] = 0;
 } // MyStrCpy
 
+void toggle_ConsoleOutput(){
+  static bool redirected = false;
+#if defined POSH_OS_LINUX
+  static bool do_stdout = isatty(fileno(stdout)) == 1;
+  static bool do_stderr = isatty(fileno(stderr)) == 1;
+#elif defined POSH_OS_WIN32
+  static bool do_stdout = _isatty(_fileno(stdout)) != 0;
+  static bool do_stderr = _isatty(_fileno(stderr)) != 0;
+#endif
+  if(!redirected){
+    redirected = true;
+#if defined POSH_OS_LINUX
+    if(do_stdout) freopen( "/dev/null", "w", stdout );
+    if(do_stderr) freopen( "/dev/null", "w", stderr );
+#elif defined POSH_OS_WIN32
+    if(do_stdout) freopen( "nul", "w", stdout );
+    if(do_stderr) freopen( "nul", "w", stderr );
+#else
+    #error "OS not supported";
+#endif
+  }else{
+    redirected = false;
+#if defined POSH_OS_LINUX
+    if(do_stdout) freopen("/dev/tty","a",stdout);
+    if(do_stderr) freopen("/dev/tty","a",stderr);
+#elif defined POSH_OS_WIN32
+    if(do_stdout) freopen("CONOUT$","a",stdout);
+    if(do_stderr) freopen("CONOUT$","a",stderr);
+#else
+    #error "OS not supported";
+#endif
+  }
+}
+
+#if defined POSH_COMPILER_MSVC || ( defined POSH_COMPILER_GCC && defined POSH_OS_WIN64 )
+    const char* ssi = "SymInitialize";
+    const char* ssc = "SymCleanup";
+    const char* ssw = "StackWalk64";
+    const char* ssgo = "SymGetOptions";
+    const char* ssso = "SymSetOptions";
+    const char* ssfta = "SymFunctionTableAccess64";
+    const char* ssglfa = "SymGetLineFromAddr64";
+    const char* ssgmb = "SymGetModuleBase64";
+    const char* ssgmi = "SymGetModuleInfo64";
+    const char* ssgsfa = "SymGetSymFromAddr64";
+    const char* sudsn = "UnDecorateSymbolName";
+    const char* sslm = "SymLoadModule64";
+    const char* ssgsp = "SymGetSearchPath";
+#elif defined POSH_COMPILER_GCC
+    const char* ssi = "SymInitialize@12";
+    const char* ssc = "SymCleanup@4";
+    const char* ssw = "StackWalk64@36";
+    const char* ssgo = "SymGetOptions@0";
+    const char* ssso = "SymSetOptions@4";
+    const char* ssfta = "SymFunctionTableAccess64@12";
+    const char* ssglfa = "SymGetLineFromAddr64@20";
+    const char* ssgmb = "SymGetModuleBase64@12";
+    const char* ssgmi = "SymGetModuleInfo64@16";
+    const char* ssgsfa = "SymGetSymFromAddr64@20";
+    const char* sudsn = "UnDecorateSymbolName@16";
+    const char* sslm = "SymLoadModule64@28";
+    const char* ssgsp = "SymGetSearchPath@12";
+#else
+#error "environment not supported"
+#endif
+
 // Normally it should be enough to use 'CONTEXT_FULL' (better would be 'CONTEXT_ALL')
 #define USED_CONTEXT_FLAGS CONTEXT_FULL
-
+#include <string>
 class StackWalkerInternal
 {
+  void print_null_dllfunctions(){
+    if (pSI == NULL)
+      std::cerr << "failed to load " << ssi << " from dll.\n";
+    if (pSC == NULL)
+      std::cerr << "failed to load " << ssc << " from dll.\n";
+    if (pSFTA == NULL)
+      std::cerr << "failed to load " << ssfta << " from dll.\n";
+    if (pSGMB == NULL)
+      std::cerr << "failed to load " << ssgmb << " from dll.\n";
+    if (pSGMI == NULL)
+      std::cerr << "failed to load " << ssgmi << " from dll.\n";
+    if (pSGO == NULL)
+      std::cerr << "failed to load " << ssgo << " from dll.\n";
+    if (pSGSFA == NULL)
+      std::cerr << "failed to load " << ssgsfa << " from dll.\n";
+    if (pSSO == NULL)
+      std::cerr << "failed to load " << ssso << " from dll.\n";
+    if (pSW == NULL)
+      std::cerr << "failed to load " << ssw << " from dll.\n";
+    if (pUDSN == NULL)
+      std::cerr << "failed to load " << sudsn << " from dll.\n";
+    if (pSLM == NULL)
+      std::cerr << "failed to load " << sslm << " from dll.\n";
+  }
 public:
   StackWalkerInternal(StackWalker* parent, HANDLE hProcess)
   {
@@ -349,31 +450,67 @@ public:
         }
 #endif
       }
+      else{
+          printf(".local found");
+      }
     }
     if (m_hDbhHelp == NULL) // if not already loaded, try to load a default-one
+    {
+#if defined POSH_COMPILER_MSVC
       m_hDbhHelp = LoadLibrary(_T("dbghelp.dll"));
-    if (m_hDbhHelp == NULL)
+#elif defined POSH_COMPILER_GCC
+    #if defined POSH_OS_WIN64
+        m_hDbhHelp = LoadLibrary("./wine_dbghelpx64.dll");
+    #else
+        m_hDbhHelp = LoadLibrary("./wine_dbghelpx86.dll");
+    #endif
+#endif
+    }
+    if (m_hDbhHelp == NULL){
+        DWORD error = GetLastError();
+        if (error)
+        {
+            LPVOID lpMsgBuf;
+            DWORD bufLen = FormatMessage(
+                FORMAT_MESSAGE_ALLOCATE_BUFFER | 
+                FORMAT_MESSAGE_FROM_SYSTEM |
+                FORMAT_MESSAGE_IGNORE_INSERTS,
+                NULL,
+                error,
+                MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT),
+                (LPTSTR) &lpMsgBuf,
+                0, NULL );
+            if (bufLen)
+            {
+                LPCSTR lpMsgStr = (LPCSTR)lpMsgBuf;
+                std::string result(lpMsgStr, lpMsgStr+bufLen);
+      
+                LocalFree(lpMsgBuf);
+                printf("%s\n", result.c_str());
+            }
+        }
+        printf("failed to load the dbghelp dll\n");
       return FALSE;
-    pSI = (tSI)GetProcAddress(m_hDbhHelp, "SymInitialize");
-    pSC = (tSC)GetProcAddress(m_hDbhHelp, "SymCleanup");
+    }
 
-    pSW = (tSW)GetProcAddress(m_hDbhHelp, "StackWalk64");
-    pSGO = (tSGO)GetProcAddress(m_hDbhHelp, "SymGetOptions");
-    pSSO = (tSSO)GetProcAddress(m_hDbhHelp, "SymSetOptions");
-
-    pSFTA = (tSFTA)GetProcAddress(m_hDbhHelp, "SymFunctionTableAccess64");
-    pSGLFA = (tSGLFA)GetProcAddress(m_hDbhHelp, "SymGetLineFromAddr64");
-    pSGMB = (tSGMB)GetProcAddress(m_hDbhHelp, "SymGetModuleBase64");
-    pSGMI = (tSGMI)GetProcAddress(m_hDbhHelp, "SymGetModuleInfo64");
-    pSGSFA = (tSGSFA)GetProcAddress(m_hDbhHelp, "SymGetSymFromAddr64");
-    pUDSN = (tUDSN)GetProcAddress(m_hDbhHelp, "UnDecorateSymbolName");
-    pSLM = (tSLM)GetProcAddress(m_hDbhHelp, "SymLoadModule64");
-    pSGSP = (tSGSP)GetProcAddress(m_hDbhHelp, "SymGetSearchPath");
-
+    pSI = (tSI)GetProcAddress(m_hDbhHelp, ssi);
+    pSC = (tSC)GetProcAddress(m_hDbhHelp, ssc);
+    pSW = (tSW)GetProcAddress(m_hDbhHelp, ssw);
+    pSGO = (tSGO)GetProcAddress(m_hDbhHelp, ssgo);
+    pSSO = (tSSO)GetProcAddress(m_hDbhHelp, ssso);
+    pSFTA = (tSFTA)GetProcAddress(m_hDbhHelp, ssfta);
+    pSGLFA = (tSGLFA)GetProcAddress(m_hDbhHelp, ssglfa);
+    pSGMB = (tSGMB)GetProcAddress(m_hDbhHelp, ssgmb);
+    pSGMI = (tSGMI)GetProcAddress(m_hDbhHelp, ssgmi);
+    pSGSFA = (tSGSFA)GetProcAddress(m_hDbhHelp, ssgsfa);
+    pUDSN = (tUDSN)GetProcAddress(m_hDbhHelp, sudsn);
+    pSLM = (tSLM)GetProcAddress(m_hDbhHelp, sslm);
+    pSGSP = (tSGSP)GetProcAddress(m_hDbhHelp, ssgsp);
     if (pSC == NULL || pSFTA == NULL || pSGMB == NULL || pSGMI == NULL || pSGO == NULL ||
         pSGSFA == NULL || pSI == NULL || pSSO == NULL || pSW == NULL || pUDSN == NULL ||
         pSLM == NULL)
     {
+      print_null_dllfunctions();
       FreeLibrary(m_hDbhHelp);
       m_hDbhHelp = NULL;
       pSC = NULL;
@@ -383,9 +520,13 @@ public:
     // SymInitialize
     if (szSymPath != NULL)
       m_szSymPath = _strdup(szSymPath);
-    if (this->pSI(m_hProcess, m_szSymPath, FALSE) == FALSE)
+    toggle_ConsoleOutput();
+    if (this->pSI( m_hProcess, NULL, TRUE ) == FALSE){
+    //if (this->pSI(m_hProcess, m_szSymPath, FALSE) == FALSE){
+      toggle_ConsoleOutput();
       this->m_parent->OnDbgHelpErr("SymInitialize", GetLastError(), 0);
-
+    }
+    toggle_ConsoleOutput();
     DWORD symOptions = this->pSGO(); // SymGetOptions
     symOptions |= SYMOPT_LOAD_LINES;
     symOptions |= SYMOPT_FAIL_CRITICAL_ERRORS;
@@ -722,7 +863,20 @@ private:
   {
     CHAR* szImg = _strdup(img);
     CHAR* szMod = _strdup(mod);
-    DWORD result = ERROR_SUCCESS;
+    DWORD result = ERROR_SUCCESS;/**/
+
+    typedef USHORT(WINAPI *GetFileVersionInfoSizeAFn)(LPCSTR,LPDWORD);
+    typedef USHORT(WINAPI *GetFileVersionInfoAFn)(LPCSTR,DWORD,DWORD,LPVOID);
+    typedef USHORT(WINAPI *VerQueryFn)(LPCVOID,LPCSTR,LPVOID,PUINT);
+    auto filelib = LoadLibrary("Api-ms-win-core-version-l1-1-0.dll");
+    auto InfoSize = (GetFileVersionInfoSizeAFn)GetProcAddress(filelib,"GetFileVersionInfoSizeA");
+    auto Info = (GetFileVersionInfoAFn)GetProcAddress(filelib,"GetFileVersionInfoA");
+#ifdef UNICODE
+    auto VerQuery = (VerQueryFn)GetProcAddress(filelib,"VerQueryValueW");
+#else
+    auto VerQuery = (VerQueryFn)GetProcAddress(filelib,"VerQueryValueA");
+#endif
+
     if ((szImg == NULL) || (szMod == NULL))
       result = ERROR_NOT_ENOUGH_MEMORY;
     else
@@ -738,17 +892,22 @@ private:
       {
         VS_FIXEDFILEINFO* fInfo = NULL;
         DWORD             dwHandle;
-        DWORD             dwSize = GetFileVersionInfoSizeA(szImg, &dwHandle);
+        //todo: import function
+        //Api-ms-win-core-version-l1-1-0.dll
+        DWORD             dwSize = InfoSize(szImg, &dwHandle);
         if (dwSize > 0)
         {
           LPVOID vData = malloc(dwSize);
           if (vData != NULL)
           {
-            if (GetFileVersionInfoA(szImg, dwHandle, dwSize, vData) != 0)
+            //todo: import function
+            //Api-ms-win-core-version-l1-1-0.dll
+            if (Info(szImg, dwHandle, dwSize, vData) != 0)
             {
               UINT  len;
               TCHAR szSubBlock[] = _T("\\");
-              if (VerQueryValue(vData, szSubBlock, (LPVOID*)&fInfo, &len) == 0)
+              //todo: import functions
+              if (VerQuery(vData, szSubBlock, (LPVOID*)&fInfo, &len) == 0)
                 fInfo = NULL;
               else
               {
@@ -1068,7 +1227,43 @@ BOOL StackWalker::ShowCallstack(HANDLE                    hThread,
     if (GetThreadId(hThread) == GetCurrentThreadId())
 #endif
     {
+#if defined POSH_COMPILER_MSVC
+  #if defined POSH_OS_WIN64
       GET_CURRENT_CONTEXT_STACKWALKER_CODEPLEX(c, USED_CONTEXT_FLAGS);
+  #else
+      do
+      {
+        memset(&c, 0, sizeof(CONTEXT));
+        c.ContextFlags = USED_CONTEXT_FLAGS;
+        __asm {
+          call x;
+        x:
+          pop eax;
+          mov[c.Eip],eax;
+          mov[c.Ebp],ebp;
+          mov[c.Esp],esp;
+        };
+      } while (0);
+  #endif
+#elif POSH_COMPILER_GCC
+  #if defined POSH_OS_WIN64
+      GET_CURRENT_CONTEXT_STACKWALKER_CODEPLEX(c, USED_CONTEXT_FLAGS);
+  #else
+      do
+      {
+        memset(&c, 0, sizeof(CONTEXT));
+        c.ContextFlags = USED_CONTEXT_FLAGS;
+        asm ( "call x;"
+          "x: popl %%eax;"
+          "movl %%eax, %0;"
+          "movl %%ebp, %1;"
+          "movl %%esp, %2"
+        : "=r"(c.Eip), "=r"(c.Ebp), "=r"(c.Esp) );
+      } while (0);
+  #endif
+#else
+  #error "environment not supported"
+#endif
     }
     else
     {
