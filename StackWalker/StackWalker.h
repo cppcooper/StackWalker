@@ -1,7 +1,13 @@
+#pragma once
 #ifndef __STACKWALKER_H__
 #define __STACKWALKER_H__
-
-#if defined(_MSC_VER)
+#include "posh.h"
+#if defined POSH_OS_WIN32
+#include <windows.h>
+#elif defined POSH_OS_LINUX
+#error "linux not yet supported"
+#endif
+//#if defined(_MSC_VER)
 
 /**********************************************************************
  *
@@ -39,9 +45,6 @@
  * **********************************************************************/
 // #pragma once is supported starting with _MSC_VER 1000,
 // so we need not to check the version (because we only support _MSC_VER >= 1100)!
-#pragma once
-
-#include <windows.h>
 
 #if _MSC_VER >= 1900
 #pragma warning(disable : 4091)
@@ -225,18 +228,15 @@ protected:
 // clang-format off
 // The following should be enough for walking the callstack...
 #define GET_CURRENT_CONTEXT_STACKWALKER_CODEPLEX(c, contextFlags) \
-  do                                                              \
-  {                                                               \
-    memset(&c, 0, sizeof(CONTEXT));                               \
-    c.ContextFlags = contextFlags;                                \
-    __asm {                                                       \
-        call x                                                    \
-     x: pop eax                                                   \
-        mov c.Eip, eax                                            \
-        mov c.Ebp, ebp                                            \
-        mov c.Esp, esp                                            \
-    };                                                            \
-  } while (0);
+  do {\
+    memset(&c, 0, sizeof(CONTEXT));\
+    c.ContextFlags = contextFlags;\
+    __asm    call x               \
+    __asm x: pop eax              \
+    __asm    mov c.Eip, eax       \
+    __asm    mov c.Ebp, ebp       \
+    __asm    mov c.Esp, esp       \
+  } while (0)
 // clang-format on
 #endif
 
@@ -252,6 +252,6 @@ protected:
   } while (0);
 #endif
 
-#endif //defined(_MSC_VER)
+//#endif //defined(_MSC_VER)
 
 #endif // __STACKWALKER_H__

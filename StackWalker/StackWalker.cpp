@@ -1228,41 +1228,14 @@ BOOL StackWalker::ShowCallstack(HANDLE                    hThread,
 #endif
     {
 #if defined POSH_COMPILER_MSVC
-  #if defined POSH_OS_WIN64
       GET_CURRENT_CONTEXT_STACKWALKER_CODEPLEX(c, USED_CONTEXT_FLAGS);
-  #else
-      do
-      {
-        memset(&c, 0, sizeof(CONTEXT));
-        c.ContextFlags = USED_CONTEXT_FLAGS;
-        __asm {
-          call x;
-        x:
-          pop eax;
-          mov[c.Eip],eax;
-          mov[c.Ebp],ebp;
-          mov[c.Esp],esp;
-        };
-      } while (0);
-  #endif
-#elif POSH_COMPILER_GCC
-  #if defined POSH_OS_WIN64
-      GET_CURRENT_CONTEXT_STACKWALKER_CODEPLEX(c, USED_CONTEXT_FLAGS);
-  #else
-      do
-      {
-        memset(&c, 0, sizeof(CONTEXT));
-        c.ContextFlags = USED_CONTEXT_FLAGS;
-        asm ( "call x;"
-          "x: popl %%eax;"
-          "movl %%eax, %0;"
-          "movl %%ebp, %1;"
-          "movl %%esp, %2"
-        : "=r"(c.Eip), "=r"(c.Ebp), "=r"(c.Esp) );
-      } while (0);
-  #endif
 #else
-  #error "environment not supported"
+      do
+      {
+        memset(&c, 0, sizeof(CONTEXT));
+        c.ContextFlags = USED_CONTEXT_FLAGS;
+        RtlCaptureContext(&c);
+      } while (0);
 #endif
     }
     else
