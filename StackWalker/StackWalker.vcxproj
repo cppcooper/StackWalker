@@ -74,7 +74,6 @@
     <ClCompile>
       <WarningLevel>Level3</WarningLevel>
       <Optimization>Disabled</Optimization>
-      <SDLCheck>true</SDLCheck>
       <ConformanceMode>true</ConformanceMode>
     </ClCompile>
   </ItemDefinitionGroup>
@@ -116,8 +115,10 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClCompile Include="StackWalker.cpp" />
+    <ClCompile Include="temp.cpp" />
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="posh.h" />
     <ClInclude Include="StackWalker.h" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
