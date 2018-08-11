@@ -1,6 +1,6 @@
-#include "StackWalker.h"
-#include <string>
 #include <iostream>
+#include <string>
+#include "StackWalker.h"
 
 class MyStackWalker : public StackWalker
 {
@@ -39,6 +39,8 @@ void f1(){
     f2();
 }
 
-int main(){
+int main(int argc, char **argv){
+    std::cout << "Stack Trace:\n";
     f1();
+    return 1;
 }
