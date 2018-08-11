@@ -305,7 +305,7 @@ void toggle_ConsoleOutput(){
 #elif defined POSH_COMPILER_GCC
     const char* ssi = "SymInitialize@12";
     const char* ssc = "SymCleanup@4";
-    const char* ssw = "StackWalk64@36";
+    const char* ssw = "StackWalk@36";
     const char* ssgo = "SymGetOptions@0";
     const char* ssso = "SymSetOptions@4";
     const char* ssfta = "SymFunctionTableAccess64@12";
@@ -460,9 +460,9 @@ public:
       m_hDbhHelp = LoadLibrary(_T("dbghelp.dll"));
 #elif defined POSH_COMPILER_GCC
     #if defined POSH_OS_WIN64
-        m_hDbhHelp = LoadLibrary("./wine_dbghelpx64.dll");
+        m_hDbhHelp = LoadLibrary("../wine_dbghelpx64.dll");
     #else
-        m_hDbhHelp = LoadLibrary("./wine_dbghelpx86.dll");
+        m_hDbhHelp = LoadLibrary("../wine_dbghelpx86.dll");
     #endif
 #endif
     }
@@ -521,11 +521,15 @@ public:
     if (szSymPath != NULL)
       m_szSymPath = _strdup(szSymPath);
     toggle_ConsoleOutput();
+#if defined POSH_COMPILER_GCC && !defined POSH_OS_WIN64
+    this->pSI(m_hProcess,NULL,TRUE);
+#else
     if (this->pSI( m_hProcess, NULL, TRUE ) == FALSE){
     //if (this->pSI(m_hProcess, m_szSymPath, FALSE) == FALSE){
       toggle_ConsoleOutput();
       this->m_parent->OnDbgHelpErr("SymInitialize", GetLastError(), 0);
     }
+#endif
     toggle_ConsoleOutput();
     DWORD symOptions = this->pSGO(); // SymGetOptions
     symOptions |= SYMOPT_LOAD_LINES;
@@ -652,6 +656,7 @@ public:
   typedef DWORD(__stdcall* tSSO)(IN DWORD SymOptions);
   tSSO pSSO;
 
+#if defined POSH_COMPILER_MSVC || ( defined POSH_COMPILER_GCC && defined POSH_OS_WIN64 )
   // StackWalk64()
   typedef BOOL(__stdcall* tSW)(DWORD                            MachineType,
                                HANDLE                           hProcess,
@@ -662,6 +667,29 @@ public:
                                PFUNCTION_TABLE_ACCESS_ROUTINE64 FunctionTableAccessRoutine,
                                PGET_MODULE_BASE_ROUTINE64       GetModuleBaseRoutine,
                                PTRANSLATE_ADDRESS_ROUTINE64     TranslateAddress);
+#elif defined POSH_COMPILER_GCC
+  // StackWalk()
+  // signature details are the same as StackWalk64, but this way if a type mismatches we'll at least get a better error
+  /*typedef BOOL(__stdcall* tSW)(DWORD                            MachineType,
+                               HANDLE                           hProcess,
+                               HANDLE                           hThread,
+                               LPSTACKFRAME                     StackFrame,
+                               PVOID                            ContextRecord,
+                               PREAD_PROCESS_MEMORY_ROUTINE     ReadMemoryRoutine,
+                               PFUNCTION_TABLE_ACCESS_ROUTINE   FunctionTableAccessRoutine,
+                               PGET_MODULE_BASE_ROUTINE         GetModuleBaseRoutine,
+                               PTRANSLATE_ADDRESS_ROUTINE       TranslateAddress);*/
+  typedef BOOL(__stdcall* tSW)(DWORD                            MachineType,
+                               HANDLE                           hProcess,
+                               HANDLE                           hThread,
+                               LPSTACKFRAME64                   StackFrame,
+                               PVOID                            ContextRecord,
+                               PREAD_PROCESS_MEMORY_ROUTINE64   ReadMemoryRoutine,
+                               PFUNCTION_TABLE_ACCESS_ROUTINE64 FunctionTableAccessRoutine,
+                               PGET_MODULE_BASE_ROUTINE64       GetModuleBaseRoutine,
+                               PTRANSLATE_ADDRESS_ROUTINE64     TranslateAddress);
+
+#endif
   tSW pSW;
 
   // UnDecorateSymbolName()
@@ -1227,15 +1255,27 @@ BOOL StackWalker::ShowCallstack(HANDLE                    hThread,
     if (GetThreadId(hThread) == GetCurrentThreadId())
 #endif
     {
+      std::cout << "usin the macros\n";
 #if defined POSH_COMPILER_MSVC
       GET_CURRENT_CONTEXT_STACKWALKER_CODEPLEX(c, USED_CONTEXT_FLAGS);
-#else
+#elif POSH_COMPILER_GCC
+  #if defined POSH_OS_WIN64
+      GET_CURRENT_CONTEXT_STACKWALKER_CODEPLEX(c, USED_CONTEXT_FLAGS);
+  #else
       do
       {
         memset(&c, 0, sizeof(CONTEXT));
         c.ContextFlags = USED_CONTEXT_FLAGS;
-        RtlCaptureContext(&c);
+        asm ( "call x;"
+          "x: popl %%eax;"
+          "movl %%eax, %0;"
+          "movl %%ebp, %1;"
+          "movl %%esp, %2"
+        : "=r"(c.Eip), "=r"(c.Ebp), "=r"(c.Esp) );
       } while (0);
+  #endif
+#else
+  #error "environment not supported"
 #endif
     }
     else
@@ -1259,7 +1299,11 @@ BOOL StackWalker::ShowCallstack(HANDLE                    hThread,
     c = *context;
 
   // init STACKFRAME for first call
+#if defined POSH_COMPILER_GCC && !defined POSH_OS_WIN64
   STACKFRAME64 s; // in/out stackframe
+#else
+  STACKFRAME64 s; // in/out stackframe
+#endif
   memset(&s, 0, sizeof(s));
   DWORD imageType;
 #ifdef _M_IX86
@@ -1313,11 +1357,14 @@ BOOL StackWalker::ShowCallstack(HANDLE                    hThread,
     // assume that either you are done, or that the stack is so hosed that the next
     // deeper frame could not be found.
     // CONTEXT need not to be supplied if imageTyp is IMAGE_FILE_MACHINE_I386!
+    printf("debug1");
     if (!this->m_sw->pSW(imageType, this->m_hProcess, hThread, &s, &c, myReadProcMem,
                          this->m_sw->pSFTA, this->m_sw->pSGMB, NULL))
     {
+      printf("debug2");
       // INFO: "StackWalk64" does not set "GetLastError"...
       this->OnDbgHelpErr("StackWalk64", 0, s.AddrPC.Offset);
+      printf("debug3");
       break;
     }
 
